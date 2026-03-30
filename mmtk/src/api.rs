@@ -49,6 +49,25 @@ static OBJECT_BARRIER: sync::Lazy<CString> =
     sync::Lazy::new(|| CString::new("ObjectBarrier").unwrap());
 static SATB_BARRIER: sync::Lazy<CString> = sync::Lazy::new(|| CString::new("SATBBarrier").unwrap());
 
+static PLAN_NOGC: sync::Lazy<CString> = sync::Lazy::new(|| CString::new("NoGC").unwrap());
+static PLAN_SEMISPACE: sync::Lazy<CString> =
+    sync::Lazy::new(|| CString::new("SemiSpace").unwrap());
+static PLAN_GENCOPY: sync::Lazy<CString> = sync::Lazy::new(|| CString::new("GenCopy").unwrap());
+static PLAN_GENIMMIX: sync::Lazy<CString> = sync::Lazy::new(|| CString::new("GenImmix").unwrap());
+static PLAN_MARKSWEEP: sync::Lazy<CString> =
+    sync::Lazy::new(|| CString::new("MarkSweep").unwrap());
+static PLAN_PAGEPROTECT: sync::Lazy<CString> =
+    sync::Lazy::new(|| CString::new("PageProtect").unwrap());
+static PLAN_IMMIX: sync::Lazy<CString> = sync::Lazy::new(|| CString::new("Immix").unwrap());
+static PLAN_MARKCOMPACT: sync::Lazy<CString> =
+    sync::Lazy::new(|| CString::new("MarkCompact").unwrap());
+static PLAN_COMPRESSOR: sync::Lazy<CString> =
+    sync::Lazy::new(|| CString::new("Compressor").unwrap());
+static PLAN_STICKYIMMIX: sync::Lazy<CString> =
+    sync::Lazy::new(|| CString::new("StickyImmix").unwrap());
+static PLAN_CONCURRENTIMMIX: sync::Lazy<CString> =
+    sync::Lazy::new(|| CString::new("ConcurrentImmix").unwrap());
+
 #[no_mangle]
 pub extern "C" fn get_mmtk_version() -> *const c_char {
     crate::build_info::MMTK_OPENJDK_FULL_VERSION.as_ptr() as _
@@ -64,6 +83,26 @@ pub extern "C" fn mmtk_active_barrier() -> *const c_char {
             // In case we have more barriers in mmtk-core.
             #[allow(unreachable_patterns)]
             _ => unimplemented!(),
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn mmtk_active_plan() -> *const c_char {
+    with_singleton!(|singleton| {
+        use mmtk::util::options::PlanSelector;
+        match *singleton.get_options().plan {
+            PlanSelector::NoGC => PLAN_NOGC.as_ptr(),
+            PlanSelector::SemiSpace => PLAN_SEMISPACE.as_ptr(),
+            PlanSelector::GenCopy => PLAN_GENCOPY.as_ptr(),
+            PlanSelector::GenImmix => PLAN_GENIMMIX.as_ptr(),
+            PlanSelector::MarkSweep => PLAN_MARKSWEEP.as_ptr(),
+            PlanSelector::PageProtect => PLAN_PAGEPROTECT.as_ptr(),
+            PlanSelector::Immix => PLAN_IMMIX.as_ptr(),
+            PlanSelector::MarkCompact => PLAN_MARKCOMPACT.as_ptr(),
+            PlanSelector::Compressor => PLAN_COMPRESSOR.as_ptr(),
+            PlanSelector::StickyImmix => PLAN_STICKYIMMIX.as_ptr(),
+            PlanSelector::ConcurrentImmix => PLAN_CONCURRENTIMMIX.as_ptr(),
         }
     })
 }
@@ -199,6 +238,13 @@ pub extern "C" fn post_alloc(
     allocator: AllocationSemantics,
 ) {
     with_mutator!(|mutator| memory_manager::post_alloc(mutator, refer, bytes, allocator))
+}
+
+#[no_mangle]
+// We trust the mutator pointer is valid.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn post_alloc_initialized(_mutator: *mut libc::c_void, refer: ObjectReference) {
+    with_singleton!(|singleton| singleton.get_plan().post_alloc_initialized(refer))
 }
 
 #[no_mangle]

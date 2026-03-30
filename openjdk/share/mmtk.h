@@ -26,6 +26,7 @@ extern const uintptr_t FREE_LIST_ALLOCATOR_SIZE;
 extern uint8_t CONCURRENT_MARKING_ACTIVE;
 
 extern const char* get_mmtk_version();
+extern const char* mmtk_active_plan();
 
 /**
  * Allocation
@@ -46,6 +47,7 @@ extern void* alloc_slow_largeobject(MMTk_Mutator mutator, size_t size,
 
 extern void post_alloc(MMTk_Mutator mutator, void* refer,
     size_t bytes, int allocator);
+extern void post_alloc_initialized(MMTk_Mutator mutator, void* refer);
 
 /// java.lang.Reference load barrier
 extern void mmtk_load_reference(MMTk_Mutator mutator, void* obj);

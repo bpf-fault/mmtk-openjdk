@@ -99,8 +99,9 @@ impl<const COMPRESSED: bool> ObjectModel<OpenJDK<COMPRESSED>> for VMObjectModel<
 
     fn is_object_sane(object: ObjectReference) -> bool {
         let oop = Oop::from(object);
-        // The KlassKind must be one of the known variants, and cannot be InstanceStackChunk which we don't support.
+        // The KlassKind must be one of the known variants.
+        // StackChunk objects are valid heap objects and are scanned via the VM slow path.
         let kind = oop.klass::<COMPRESSED>().kind;
-        (kind as i32) < (KlassKind::Unknown as i32) && kind != KlassKind::InstanceStackChunk
+        (kind as i32) < (KlassKind::Unknown as i32)
     }
 }

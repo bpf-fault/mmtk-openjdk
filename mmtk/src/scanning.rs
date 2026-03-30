@@ -3,7 +3,6 @@ use crate::Slot;
 use crate::{NewBuffer, OpenJDKSlot, UPCALLS};
 use crate::{OpenJDK, SlotsClosure};
 use mmtk::memory_manager;
-use mmtk::scheduler::WorkBucketStage;
 use mmtk::util::opaque_pointer::*;
 use mmtk::util::{Address, ObjectReference};
 use mmtk::vm::{RootsWorkFactory, Scanning, SlotVisitor};
@@ -81,9 +80,10 @@ impl<const COMPRESSED: bool> Scanning<OpenJDK<COMPRESSED>> for VMScanning {
         _tls: VMWorkerThread,
         factory: impl RootsWorkFactory<OpenJDKSlot<COMPRESSED>>,
     ) {
+        let root_stage = factory.roots_work_bucket_stage();
         memory_manager::add_work_packets(
             crate::singleton::<COMPRESSED>(),
-            WorkBucketStage::Prepare,
+            root_stage,
             vec![
                 Box::new(ScanCodeCacheRoots::new(factory.clone())) as _,
                 Box::new(ScanClassLoaderDataGraphRoots::new(factory.clone())) as _,

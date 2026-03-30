@@ -24,13 +24,8 @@ impl<const COMPRESSED: bool> Collection<OpenJDK<COMPRESSED>> for VMCollection {
     }
 
     fn resume_mutators(tls: VMWorkerThread) {
-        if *crate::singleton::<COMPRESSED>().get_options().plan
-            == mmtk::util::options::PlanSelector::ConcurrentImmix
-        {
-            // For concurrent Immix, we need to check if SATB is active
-            let concurrent_plan = singleton::<COMPRESSED>().get_plan().concurrent().unwrap();
+        if let Some(concurrent_plan) = singleton::<COMPRESSED>().get_plan().concurrent() {
             let concurrent_marking_active = concurrent_plan.concurrent_work_in_progress();
-
             unsafe {
                 crate::CONCURRENT_MARKING_ACTIVE = if concurrent_marking_active { 1 } else { 0 };
             }

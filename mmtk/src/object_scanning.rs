@@ -229,7 +229,7 @@ fn oop_iterate<const COMPRESSED: bool>(oop: Oop, closure: &mut impl SlotVisitor<
             instance_klass.oop_iterate::<COMPRESSED>(oop, closure);
         }
         KlassKind::InstanceStackChunk => {
-            unreachable!("StackChunkOop not supported!")
+            unreachable!("StackChunkOop requires slow-path oop_iterate with VM support")
         }
         KlassKind::Unknown => {
             unreachable!("Unknown KlassKind")
@@ -257,24 +257,34 @@ pub unsafe extern "C" fn scan_object_fn<
 pub fn scan_object<const COMPRESSED: bool>(
     object: ObjectReference,
     closure: &mut impl SlotVisitor<S<COMPRESSED>>,
-    _tls: VMWorkerThread,
+    tls: VMWorkerThread,
 ) {
     unsafe {
-        oop_iterate::<COMPRESSED>(mem::transmute::<ObjectReference, &OopDesc>(object), closure)
+        let oop = mem::transmute::<ObjectReference, &OopDesc>(object);
+        if oop.klass::<COMPRESSED>().kind == KlassKind::InstanceStackChunk {
+            oop_iterate_slow::<COMPRESSED, _>(oop, closure, tls.0.0);
+        } else {
+            oop_iterate::<COMPRESSED>(oop, closure)
+        }
     }
 }
 
 pub fn scan_object_for_fixup<const COMPRESSED: bool>(
     object: ObjectReference,
     closure: &mut impl SlotVisitor<S<COMPRESSED>>,
-    _tls: VMWorkerThread,
+    tls: VMWorkerThread,
 ) {
     SUPPRESS_WEAK_REF_DISCOVERY.with(|discovery_flag| {
         SLOT_REWRITE_MODE.with(|rewrite_flag| {
             let prev_discovery = discovery_flag.replace(true);
             let prev_rewrite = rewrite_flag.replace(true);
             unsafe {
-                oop_iterate::<COMPRESSED>(mem::transmute::<ObjectReference, &OopDesc>(object), closure)
+                let oop = mem::transmute::<ObjectReference, &OopDesc>(object);
+                if oop.klass::<COMPRESSED>().kind == KlassKind::InstanceStackChunk {
+                    oop_iterate_slow::<COMPRESSED, _>(oop, closure, tls.0.0);
+                } else {
+                    oop_iterate::<COMPRESSED>(oop, closure)
+                }
             }
             rewrite_flag.set(prev_rewrite);
             discovery_flag.set(prev_discovery);

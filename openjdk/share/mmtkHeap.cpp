@@ -168,6 +168,21 @@ jint MMTkHeap::initialize() {
 
   openjdk_gc_init(&mmtk_upcalls);
 
+  const char* barrier = mmtk_active_barrier();
+  const char* plan = mmtk_active_plan();
+  // NOTE: The current concurrent-marking Compressor implementation relies on the normal
+  // post-allocation metadata path to record black allocations after object initialization.
+  // OpenJDK inline allocation fastpaths manipulate allocator cursors and initialize object
+  // bodies directly in generated code, bypassing that bookkeeping. ART solves this class of
+  // problem by doing a pause-time allocator/block catch-up (`UpdateMovingSpaceBlackAllocations`).
+  // Until we implement an equivalent catch-up path for MMTk/OpenJDK, keep inline fastpaths off
+  // for the specific configuration that needs SATB black-allocation tracking.
+  if (strcmp(plan, "Compressor") == 0 && strcmp(barrier, "SATBBarrier") == 0 && mmtk_enable_allocation_fastpath) {
+    fprintf(stderr,
+            "MMTk: disabling allocation fastpath for Compressor+SATB because inline allocations bypass post-allocation metadata required by concurrent marking.\n");
+    mmtk_enable_allocation_fastpath = false;
+  }
+
   // Cache the value here. It is a constant depending on the selected plan. The plan won't change from now, so value won't change.
   MMTkMutatorContext::max_non_los_default_alloc_bytes = get_max_non_los_default_alloc_bytes();
 
@@ -545,8 +560,11 @@ HeapWord* MMTkHeap::mem_allocate_nonmove(size_t size, bool* gc_overhead_limit_wa
 }
 
 bool MMTkHeap::requires_barriers(stackChunkOop obj) const {
-  ShouldNotReachHere();
-  return false;
+  // For the current third-party heap integration, stack chunk barrier needs line up
+  // with concurrent marking activity. When SATB concurrent marking is active, writes to
+  // stack chunk contents must participate in the barrier protocol; otherwise no special
+  // stack chunk barriers are required.
+  return CONCURRENT_MARKING_ACTIVE == 1;
 }
 
 void MMTkHeap::pin_object(JavaThread* thread, oop obj) {

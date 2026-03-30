@@ -88,6 +88,13 @@ public:
     follow_cld_closure.do_cld(cld);
   }
 
+  // StackChunk oop iteration may report embedded Method/nmethod metadata.  MMTk's
+  // object-scanning path only needs the oop slots here; keeping these as no-ops avoids
+  // BasicOopIterateClosure's debug aborts and matches the existing binding behavior of
+  // not doing additional metadata tracing from this closure.
+  virtual void do_method(Method* m) {}
+  virtual void do_nmethod(nmethod* nm) {}
+
   virtual ReferenceIterationMode reference_iteration_mode() { return DO_FIELDS; }
   virtual bool idempotent() { return true; }
 };
