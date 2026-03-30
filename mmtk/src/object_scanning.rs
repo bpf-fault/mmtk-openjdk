@@ -5,7 +5,7 @@ use super::UPCALLS;
 use mmtk::util::opaque_pointer::*;
 use mmtk::util::{Address, ObjectReference};
 use mmtk::vm::SlotVisitor;
-use std::cell::UnsafeCell;
+use std::cell::{Cell, UnsafeCell};
 use std::{mem, slice};
 
 type S<const COMPRESSED: bool> = OpenJDKSlot<COMPRESSED>;
@@ -131,6 +131,17 @@ impl OopIterate for InstanceRefKlass {
         let discovered_addr: OpenJDKSlot<COMPRESSED> = Self::discovered_address::<COMPRESSED>(oop);
         closure.visit_slot(discovered_addr);
 
+        if SLOT_REWRITE_MODE.with(|flag| flag.get()) {
+            // In the concurrent UFFD slot-rewrite path, the reference processor has already
+            // updated/cleared weak referents in the source object before the shadow snapshot is
+            // materialized. Re-forwarding those referents here can corrupt them. Preserve the
+            // referent field as-is for weak/soft/phantom refs, but keep final references strong.
+            if matches!(self.instance_klass.reference_type, ReferenceType::Final) {
+                Self::process_ref_as_strong(oop, closure);
+            }
+            return;
+        }
+
         if Self::should_scan_weak_refs::<COMPRESSED>() {
             let reference = ObjectReference::from(oop);
             match self.instance_klass.reference_type {
@@ -155,6 +166,7 @@ impl InstanceRefKlass {
         !*crate::singleton::<COMPRESSED>()
             .get_options()
             .no_reference_types
+            && !SUPPRESS_WEAK_REF_DISCOVERY.with(|flag| flag.get())
     }
     fn process_ref_as_strong<const COMPRESSED: bool>(
         oop: Oop,
@@ -227,6 +239,8 @@ fn oop_iterate<const COMPRESSED: bool>(oop: Oop, closure: &mut impl SlotVisitor<
 
 thread_local! {
     static CLOSURE: UnsafeCell<*mut u8> = const { UnsafeCell::new(std::ptr::null_mut()) };
+    static SUPPRESS_WEAK_REF_DISCOVERY: Cell<bool> = const { Cell::new(false) };
+    static SLOT_REWRITE_MODE: Cell<bool> = const { Cell::new(false) };
 }
 
 pub unsafe extern "C" fn scan_object_fn<
@@ -248,4 +262,22 @@ pub fn scan_object<const COMPRESSED: bool>(
     unsafe {
         oop_iterate::<COMPRESSED>(mem::transmute::<ObjectReference, &OopDesc>(object), closure)
     }
+}
+
+pub fn scan_object_for_fixup<const COMPRESSED: bool>(
+    object: ObjectReference,
+    closure: &mut impl SlotVisitor<S<COMPRESSED>>,
+    _tls: VMWorkerThread,
+) {
+    SUPPRESS_WEAK_REF_DISCOVERY.with(|discovery_flag| {
+        SLOT_REWRITE_MODE.with(|rewrite_flag| {
+            let prev_discovery = discovery_flag.replace(true);
+            let prev_rewrite = rewrite_flag.replace(true);
+            unsafe {
+                oop_iterate::<COMPRESSED>(mem::transmute::<ObjectReference, &OopDesc>(object), closure)
+            }
+            rewrite_flag.set(prev_rewrite);
+            discovery_flag.set(prev_discovery);
+        });
+    });
 }

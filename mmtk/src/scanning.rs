@@ -53,6 +53,14 @@ impl<const COMPRESSED: bool> Scanning<OpenJDK<COMPRESSED>> for VMScanning {
         crate::object_scanning::scan_object::<COMPRESSED>(object, slot_visitor, tls);
     }
 
+    fn scan_object_for_slot_rewrite<SV: SlotVisitor<OpenJDKSlot<COMPRESSED>>>(
+        tls: VMWorkerThread,
+        object: ObjectReference,
+        slot_visitor: &mut SV,
+    ) {
+        crate::object_scanning::scan_object_for_fixup::<COMPRESSED>(object, slot_visitor, tls);
+    }
+
     fn notify_initial_thread_scan_complete(_partial_scan: bool, _tls: VMWorkerThread) {
         // unimplemented!()
         // TODO

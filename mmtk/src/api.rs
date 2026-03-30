@@ -103,6 +103,8 @@ pub extern "C" fn openjdk_gc_init(calls: *const OpenJDK_Upcalls) {
             Some(PlanSelector::GenImmix)
         } else if cfg!(feature = "stickyimmix") {
             Some(PlanSelector::StickyImmix)
+        } else if cfg!(feature = "compressor") {
+            Some(PlanSelector::Compressor)
         } else {
             None
         };
