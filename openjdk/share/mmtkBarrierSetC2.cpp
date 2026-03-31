@@ -626,8 +626,8 @@ bool MMTkBarrierSetC2::can_remove_barrier(GraphKit* kit, PhaseTransform* phase, 
   // Test if this store operation happens right after allocation.
 
   intptr_t      offset = 0;
-  Node*         base   = AddPNode::Ideal_base_and_offset(slot, phase, offset);
-  AllocateNode* alloc  = AllocateNode::Ideal_allocation(base, phase);
+  Node*         base   = AddPNode::Ideal_base_and_offset(slot, static_cast<PhaseValues*>(phase), offset);
+  AllocateNode* alloc  = AllocateNode::Ideal_allocation(base, static_cast<PhaseValues*>(phase));
 
   if (offset == Type::OffsetBot) {
     return false; // cannot unalias unless there are precise offsets

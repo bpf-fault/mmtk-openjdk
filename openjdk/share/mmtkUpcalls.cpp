@@ -300,6 +300,12 @@ static void mmtk_enqueue_references(void** objects, size_t len) {
     return;
   }
 
+  static volatile int mmtk_ref_enqueue_trace_budget = 16;
+  const jlong start_nanos = os::javaTimeNanos();
+  size_t dedup_same_as_last = 0;
+  size_t dedup_already_discovered = 0;
+  size_t linked = 1;
+
   oop first = (oop) objects[0]; // This points to the first node of the linked list.
   oop last = first; // This points to the last node of the linked list.
 
@@ -319,19 +325,32 @@ static void mmtk_enqueue_references(void** objects, size_t len) {
     if (reff == last) {
       // The `discovered` field of `last` is still NULL,
       // but we skip the current `reff` if it happens to be the same as `last`.
+      dedup_same_as_last++;
       continue;
     }
     oop old_discovered = HeapAccess<AS_RAW>::oop_load_at(reff, java_lang_ref_Reference::discovered_offset());
     if (old_discovered != NULL) {
       // We skip references that already have the `discovered` field set because they have already been visited.
+      dedup_already_discovered++;
       continue;
     }
     HeapAccess<AS_RAW>::oop_store_at(last, java_lang_ref_Reference::discovered_offset(), reff);
     last = reff;
+    linked++;
   }
 
   oop old_first = Universe::swap_reference_pending_list(first);
   HeapAccess<AS_RAW>::oop_store_at(last, java_lang_ref_Reference::discovered_offset(), old_first);
+
+  const jlong elapsed_ms = (os::javaTimeNanos() - start_nanos) / NANOSECS_PER_MILLISEC;
+  if ((elapsed_ms >= 10 || len >= 1000) && Atomic::add(&mmtk_ref_enqueue_trace_budget, -1) > 0) {
+    log_info(gc)("MMTk enqueue_references: input=%zu linked=%zu dedup_same_as_last=%zu dedup_already_discovered=%zu took=%ld ms",
+                 len,
+                 linked,
+                 dedup_same_as_last,
+                 dedup_already_discovered,
+                 elapsed_ms);
+  }
 }
 
 void mmtk_fix_oop_relocations(void *nmptr) {
