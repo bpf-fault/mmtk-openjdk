@@ -170,17 +170,22 @@ jint MMTkHeap::initialize() {
 
   const char* barrier = mmtk_active_barrier();
   const char* plan = mmtk_active_plan();
-  // NOTE: The current concurrent-marking Compressor implementation relies on the normal
-  // post-allocation metadata path to record black allocations after object initialization.
-  // OpenJDK inline allocation fastpaths manipulate allocator cursors and initialize object
-  // bodies directly in generated code, bypassing that bookkeeping. ART solves this class of
-  // problem by doing a pause-time allocator/block catch-up (`UpdateMovingSpaceBlackAllocations`).
-  // Until we implement an equivalent catch-up path for MMTk/OpenJDK, keep inline fastpaths off
-  // for the specific configuration that needs SATB black-allocation tracking.
+  // The concurrent UFFD Compressor can now catch up on black allocations at the FinalMark pause
+  // by walking the retired/current bump-allocation buffers that were used during the concurrent
+  // marking window.  Keep the OpenJDK allocation fastpath gated behind an explicit opt-in while
+  // this path is being validated.
+  const char* compressor_fastpath_env = getenv("MMTK_COMPRESSOR_ALLOW_FASTPATH");
+  const bool allow_compressor_fastpath = compressor_fastpath_env != NULL && strcmp(compressor_fastpath_env, "0") != 0;
   if (strcmp(plan, "Compressor") == 0 && strcmp(barrier, "SATBBarrier") == 0 && mmtk_enable_allocation_fastpath) {
-    fprintf(stderr,
-            "MMTk: disabling allocation fastpath for Compressor+SATB because inline allocations bypass post-allocation metadata required by concurrent marking.\n");
-    mmtk_enable_allocation_fastpath = false;
+    if (allow_compressor_fastpath) {
+      fprintf(stderr,
+              "MMTk: enabling experimental allocation fastpath for Compressor+SATB (MMTK_COMPRESSOR_ALLOW_FASTPATH=%s).\n",
+              compressor_fastpath_env);
+    } else {
+      fprintf(stderr,
+              "MMTk: disabling allocation fastpath for Compressor+SATB by default; set MMTK_COMPRESSOR_ALLOW_FASTPATH=1 to enable the experimental black-allocation catch-up path.\n");
+      mmtk_enable_allocation_fastpath = false;
+    }
   }
 
   // Cache the value here. It is a constant depending on the selected plan. The plan won't change from now, so value won't change.
