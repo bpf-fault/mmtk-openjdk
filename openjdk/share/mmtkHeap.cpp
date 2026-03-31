@@ -170,22 +170,12 @@ jint MMTkHeap::initialize() {
 
   const char* barrier = mmtk_active_barrier();
   const char* plan = mmtk_active_plan();
-  // The concurrent UFFD Compressor can now catch up on black allocations at the FinalMark pause
-  // by walking the retired/current bump-allocation buffers that were used during the concurrent
-  // marking window.  Keep the OpenJDK allocation fastpath gated behind an explicit opt-in while
-  // this path is being validated.
-  const char* compressor_fastpath_env = getenv("MMTK_COMPRESSOR_ALLOW_FASTPATH");
-  const bool allow_compressor_fastpath = compressor_fastpath_env != NULL && strcmp(compressor_fastpath_env, "0") != 0;
+  // The concurrent UFFD Compressor now catches up on black allocations at the FinalMark pause
+  // by walking the retired/current bump-allocation buffers used during the concurrent marking
+  // window, so the normal OpenJDK allocation fastpath can stay enabled for Compressor+SATB.
   if (strcmp(plan, "Compressor") == 0 && strcmp(barrier, "SATBBarrier") == 0 && mmtk_enable_allocation_fastpath) {
-    if (allow_compressor_fastpath) {
-      fprintf(stderr,
-              "MMTk: enabling experimental allocation fastpath for Compressor+SATB (MMTK_COMPRESSOR_ALLOW_FASTPATH=%s).\n",
-              compressor_fastpath_env);
-    } else {
-      fprintf(stderr,
-              "MMTk: disabling allocation fastpath for Compressor+SATB by default; set MMTK_COMPRESSOR_ALLOW_FASTPATH=1 to enable the experimental black-allocation catch-up path.\n");
-      mmtk_enable_allocation_fastpath = false;
-    }
+    fprintf(stderr,
+            "MMTk: keeping allocation fastpath enabled for Compressor+SATB using pause-time black-allocation catch-up.\n");
   }
 
   // Cache the value here. It is a constant depending on the selected plan. The plan won't change from now, so value won't change.
