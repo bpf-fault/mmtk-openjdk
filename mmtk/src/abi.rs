@@ -298,7 +298,7 @@ impl InstanceRefKlass {
 #[repr(C)]
 union KlassPointer {
     /// uncompressed Klass pointer
-    klass: &'static Klass,
+    klass: *const Klass,
     /// compressed Klass pointer
     narrow_klass: u32,
 }
@@ -324,6 +324,14 @@ impl OopDesc {
         unsafe { mem::transmute(self) }
     }
 
+    pub fn has_non_null_klass<const COMPRESSED: bool>(&self) -> bool {
+        if COMPRESSED {
+            unsafe { self.klass.narrow_klass != 0 }
+        } else {
+            unsafe { !self.klass.klass.is_null() }
+        }
+    }
+
     pub fn klass<const COMPRESSED: bool>(&self) -> &'static Klass {
         if COMPRESSED {
             let compressed = unsafe { self.klass.narrow_klass };
@@ -331,7 +339,7 @@ impl OopDesc {
                 + ((compressed as usize) << COMPRESSED_KLASS_SHIFT.load(Ordering::Relaxed));
             unsafe { &*addr.to_ptr::<Klass>() }
         } else {
-            unsafe { self.klass.klass }
+            unsafe { &*self.klass.klass }
         }
     }
 }

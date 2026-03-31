@@ -97,6 +97,10 @@ impl<const COMPRESSED: bool> ObjectModel<OpenJDK<COMPRESSED>> for VMObjectModel<
         }
     }
 
+    fn is_object_start_initialized(object: ObjectReference) -> bool {
+        Oop::from(object).has_non_null_klass::<COMPRESSED>()
+    }
+
     fn is_object_sane(object: ObjectReference) -> bool {
         let oop = Oop::from(object);
         // The KlassKind must be one of the known variants.
