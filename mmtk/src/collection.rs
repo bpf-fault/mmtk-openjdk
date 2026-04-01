@@ -24,6 +24,9 @@ impl<const COMPRESSED: bool> Collection<OpenJDK<COMPRESSED>> for VMCollection {
     }
 
     fn resume_mutators(tls: VMWorkerThread) {
+        if std::env::var_os("MMTK_TRACE_UFFD_WP_TRACKER").is_some() {
+            eprintln!("MMTK OpenJDK VMCollection: resume_mutators entry");
+        }
         if *crate::singleton::<COMPRESSED>().get_options().plan
             == mmtk::util::options::PlanSelector::ConcurrentImmix
         {
@@ -36,8 +39,14 @@ impl<const COMPRESSED: bool> Collection<OpenJDK<COMPRESSED>> for VMCollection {
             }
             log::debug!("Set CONCURRENT_MARKING_ACTIVE to {concurrent_marking_active}");
         }
+        if std::env::var_os("MMTK_TRACE_UFFD_WP_TRACKER").is_some() {
+            eprintln!("MMTK OpenJDK VMCollection: before resume_mutators upcall");
+        }
         unsafe {
             ((*UPCALLS).resume_mutators)(tls);
+        }
+        if std::env::var_os("MMTK_TRACE_UFFD_WP_TRACKER").is_some() {
+            eprintln!("MMTK OpenJDK VMCollection: after resume_mutators upcall");
         }
     }
 
