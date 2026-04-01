@@ -2,10 +2,13 @@
 #define MMTK_OPENJDK_MMTK_ROOTS_CLOSURE_HPP
 
 #include "memory/iterator.hpp"
+#include "memory/universe.hpp"
 #include "mmtk.h"
 #include "oops/oop.hpp"
 #include "oops/oop.inline.hpp"
 #include "utilities/globalDefinitions.hpp"
+#include <cstdio>
+#include <cstdlib>
 
 class MMTkRootsClosure : public OopClosure {
   SlotsClosure _slots_closure;
@@ -17,6 +20,27 @@ class MMTkRootsClosure : public OopClosure {
   inline void do_oop_work(T* p, bool narrow) {
     T heap_oop = RawAccess<>::oop_load(p);
     if (!CompressedOops::is_null(heap_oop)) {
+      const bool trace_heap_root_slots = std::getenv("MMTK_TRACE_HEAP_ROOT_SLOTS") != nullptr;
+      const bool abort_on_heap_root_slot = std::getenv("MMTK_ABORT_ON_HEAP_ROOT_SLOT") != nullptr;
+      if ((trace_heap_root_slots || abort_on_heap_root_slot) && Universe::heap()->is_in((void*)p)) {
+        static int heap_root_slot_budget = 64;
+        if (trace_heap_root_slots && heap_root_slot_budget-- > 0) {
+          std::fprintf(
+              stderr,
+              "MMTK heap-resident root slot: slot=%p narrow=%d\n",
+              (void*)p,
+              narrow ? 1 : 0);
+        }
+        if (abort_on_heap_root_slot) {
+          std::fprintf(
+              stderr,
+              "MMTK aborting on heap-resident root slot: slot=%p narrow=%d\n",
+              (void*)p,
+              narrow ? 1 : 0);
+          std::fflush(stderr);
+          std::abort();
+        }
+      }
       if (UseCompressedOops && !narrow) {
         guarantee((uintptr_t(p) & (1ull << 63)) == 0, "test");
         p = (T*) (uintptr_t(p) | (1ull << 63));

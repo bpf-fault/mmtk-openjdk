@@ -4,6 +4,14 @@
 
 //////////////////// Runtime ////////////////////
 
+static bool trace_uffd_stale_writes_enabled() {
+  static int enabled = -1;
+  if (enabled == -1) {
+    enabled = getenv("MMTK_TRACE_UFFD_STALE_WRITES") != nullptr ? 1 : 0;
+  }
+  return enabled == 1;
+}
+
 void MMTkSATBBarrierSetRuntime::load_reference(DecoratorSet decorators, oop value) const {
   if (mmtk_enable_reference_load_barrier) {
     if (CONCURRENT_MARKING_ACTIVE == 1 && value != NULL)
@@ -19,6 +27,9 @@ void MMTkSATBBarrierSetRuntime::object_probable_write(oop new_obj) const {
 }
 
 void MMTkSATBBarrierSetRuntime::object_reference_write_pre(oop src, oop* slot, oop target) const {
+  if (trace_uffd_stale_writes_enabled() && src != NULL && slot != NULL && target != NULL) {
+    ::mmtk_debug_trace_uffd_write((void*) src, (void*) slot, (void*) target);
+  }
   if (mmtk_enable_barrier_fastpath) {
     if (is_unlog_bit_set(src)) {
       object_reference_write_slow_call((void*) src, (void*) slot, (void*) target);

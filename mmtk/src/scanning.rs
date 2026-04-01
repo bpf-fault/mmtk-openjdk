@@ -60,6 +60,21 @@ impl<const COMPRESSED: bool> Scanning<OpenJDK<COMPRESSED>> for VMScanning {
         crate::object_scanning::scan_object_for_fixup::<COMPRESSED>(object, slot_visitor, tls);
     }
 
+    fn describe_slot(object: ObjectReference, slot: OpenJDKSlot<COMPRESSED>) -> Option<String> {
+        crate::object_scanning::describe_slot::<COMPRESSED>(object, slot)
+    }
+
+    fn slot_offset(object: ObjectReference, slot: OpenJDKSlot<COMPRESSED>) -> Option<usize> {
+        Some(crate::object_scanning::slot_offset::<COMPRESSED>(object, slot))
+    }
+
+    fn debug_load_slot_at_offset(
+        object: ObjectReference,
+        offset: usize,
+    ) -> Option<Option<ObjectReference>> {
+        Some(crate::object_scanning::load_slot_at_offset::<COMPRESSED>(object, offset))
+    }
+
     fn notify_initial_thread_scan_complete(_partial_scan: bool, _tls: VMWorkerThread) {
         // unimplemented!()
         // TODO

@@ -4,9 +4,11 @@ use super::abi::*;
 use super::UPCALLS;
 use mmtk::util::opaque_pointer::*;
 use mmtk::util::{Address, ObjectReference};
+use mmtk::vm::slot::{MemorySlice, Slot};
 use mmtk::vm::SlotVisitor;
 use std::cell::{Cell, UnsafeCell};
-use std::{mem, slice};
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::mem;
 
 type S<const COMPRESSED: bool> = OpenJDKSlot<COMPRESSED>;
 
@@ -57,18 +59,9 @@ impl OopIterate for InstanceMirrorKlass {
         // static fields
         let start = Self::start_of_static_fields(oop);
         let len = Self::static_oop_field_count(oop);
-        if COMPRESSED {
-            let start: *const NarrowOop = start.to_ptr::<NarrowOop>();
-            let slice = unsafe { slice::from_raw_parts(start, len as _) };
-            for narrow_oop in slice {
-                closure.visit_slot(narrow_oop.slot().into());
-            }
-        } else {
-            let start: *const Oop = start.to_ptr::<Oop>();
-            let slice = unsafe { slice::from_raw_parts(start, len as _) };
-            for oop in slice {
-                closure.visit_slot(Address::from_ref(oop as &Oop).into());
-            }
+        let slot_bytes = OpenJDKSlot::<COMPRESSED>::BYTES_IN_SLOT;
+        for i in 0..len {
+            closure.visit_slot((start + i * slot_bytes).into());
         }
     }
 }
@@ -90,14 +83,9 @@ impl OopIterate for ObjArrayKlass {
         closure: &mut impl SlotVisitor<S<COMPRESSED>>,
     ) {
         let array = unsafe { oop.as_array_oop() };
-        if COMPRESSED {
-            for narrow_oop in unsafe { array.data::<NarrowOop, COMPRESSED>(BasicType::T_OBJECT) } {
-                closure.visit_slot(narrow_oop.slot().into());
-            }
-        } else {
-            for oop in unsafe { array.data::<Oop, COMPRESSED>(BasicType::T_OBJECT) } {
-                closure.visit_slot(Address::from_ref(oop as &Oop).into());
-            }
+        let slots = unsafe { array.slice::<COMPRESSED>(BasicType::T_OBJECT) };
+        for slot in slots.iter_slots() {
+            closure.visit_slot(slot);
         }
     }
 }
@@ -129,15 +117,66 @@ impl OopIterate for InstanceRefKlass {
         // global "reference pending list" or given to the `ReferenceHandler` thread.
         // We treat it as a strong field.
         let discovered_addr: OpenJDKSlot<COMPRESSED> = Self::discovered_address::<COMPRESSED>(oop);
+        if SLOT_REWRITE_MODE.with(|flag| flag.get())
+            && std::env::var_os("MMTK_TRACE_COMPRESSOR_SLOT_REWRITE_DISCOVERED").is_some()
+        {
+            static DISCOVERED_TRACE_BUDGET: AtomicI32 = AtomicI32::new(64);
+            if DISCOVERED_TRACE_BUDGET.fetch_sub(1, Ordering::Relaxed) > 0 {
+                let reference = ObjectReference::from(oop);
+                let discovered = discovered_addr.load();
+                log::info!(
+                    "Compressor slot rewrite discovered field: reference={} type={:?} discovered={:?}",
+                    reference,
+                    self.instance_klass.reference_type,
+                    discovered,
+                );
+            }
+        }
         closure.visit_slot(discovered_addr);
 
         if SLOT_REWRITE_MODE.with(|flag| flag.get()) {
-            // In the concurrent UFFD slot-rewrite path, the reference processor has already
-            // updated/cleared weak referents in the source object before the shadow snapshot is
-            // materialized. Re-forwarding those referents here can corrupt them. Preserve the
-            // referent field as-is for weak/soft/phantom refs, but keep final references strong.
-            if matches!(self.instance_klass.reference_type, ReferenceType::Final) {
+            // In the concurrent UFFD slot-rewrite path, the reference processor is supposed to
+            // have already updated/cleared weak referents in the source object before the shadow
+            // snapshot is materialized. Preserve weak/soft/phantom referents by default, but keep
+            // an opt-in experiment to rewrite them as ordinary strong slots so we can distinguish
+            // stale preserved referents from other stale Reference fields.
+            let rewrite_weak_referents = std::env::var_os(
+                "MMTK_COMPRESSOR_SLOT_REWRITE_PROCESS_WEAK_REFERENTS",
+            )
+            .is_some();
+            if matches!(self.instance_klass.reference_type, ReferenceType::Final)
+                || rewrite_weak_referents
+            {
+                if rewrite_weak_referents
+                    && !matches!(self.instance_klass.reference_type, ReferenceType::Final)
+                    && std::env::var_os("MMTK_TRACE_COMPRESSOR_SLOT_REWRITE_REFS").is_some()
+                {
+                    static REWRITE_TRACE_BUDGET: AtomicI32 = AtomicI32::new(64);
+                    if REWRITE_TRACE_BUDGET.fetch_sub(1, Ordering::Relaxed) > 0 {
+                        let reference = ObjectReference::from(oop);
+                        let referent = Self::referent_address::<COMPRESSED>(oop).load();
+                        log::info!(
+                            "Compressor slot rewrite processing weak referent as strong: reference={} type={:?} referent={:?}",
+                            reference,
+                            self.instance_klass.reference_type,
+                            referent,
+                        );
+                    }
+                }
                 Self::process_ref_as_strong(oop, closure);
+            } else if std::env::var_os("MMTK_TRACE_COMPRESSOR_SLOT_REWRITE_REFS").is_some() {
+                static TRACE_BUDGET: AtomicI32 = AtomicI32::new(64);
+                if TRACE_BUDGET.fetch_sub(1, Ordering::Relaxed) > 0 {
+                    let reference = ObjectReference::from(oop);
+                    let referent_addr = Self::referent_address::<COMPRESSED>(oop);
+                    let referent = referent_addr.load();
+                    log::info!(
+                        "Compressor slot rewrite preserved referent: reference={} type={:?} referent={:?}",
+                        reference,
+                        self.instance_klass.reference_type,
+                        referent,
+                    );
+                }
             }
             return;
         }
@@ -267,6 +306,43 @@ pub fn scan_object<const COMPRESSED: bool>(
             oop_iterate::<COMPRESSED>(oop, closure)
         }
     }
+}
+
+pub fn slot_offset<const COMPRESSED: bool>(
+    object: ObjectReference,
+    slot: OpenJDKSlot<COMPRESSED>,
+) -> usize {
+    slot.addr - object.to_raw_address()
+}
+
+pub fn load_slot_at_offset<const COMPRESSED: bool>(
+    object: ObjectReference,
+    offset: usize,
+) -> Option<ObjectReference> {
+    OpenJDKSlot::<COMPRESSED> {
+        addr: object.to_raw_address() + offset,
+    }
+    .load()
+}
+
+pub fn describe_slot<const COMPRESSED: bool>(
+    object: ObjectReference,
+    slot: OpenJDKSlot<COMPRESSED>,
+) -> Option<String> {
+    let oop = Oop::from(object);
+    let klass = oop.klass::<COMPRESSED>();
+    let slot_offset = slot_offset::<COMPRESSED>(object, slot);
+    let mut desc = format!("klass={:?}, offset={}", klass.kind, slot_offset);
+    if klass.kind == KlassKind::InstanceRef {
+        let instance_klass = unsafe { klass.cast::<InstanceRefKlass>() };
+        desc.push_str(&format!(", reference_type={:?}", instance_klass.instance_klass.reference_type));
+        if slot.addr == InstanceRefKlass::referent_address::<COMPRESSED>(oop).addr {
+            desc.push_str(", field=referent");
+        } else if slot.addr == InstanceRefKlass::discovered_address::<COMPRESSED>(oop).addr {
+            desc.push_str(", field=discovered");
+        }
+    }
+    Some(desc)
 }
 
 pub fn scan_object_for_fixup<const COMPRESSED: bool>(

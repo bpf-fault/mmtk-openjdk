@@ -61,6 +61,9 @@ extern void mmtk_object_reference_write_post(MMTk_Mutator mutator, void* src, vo
 /// Generic slow-path
 extern void mmtk_object_reference_write_slow(MMTk_Mutator mutator, void* src, void* slot, void* target);
 
+/// Debug-only stale-write tracer for split-pause UFFD debugging.
+extern void mmtk_debug_trace_uffd_write(void* src, void* slot, void* target);
+
 /// Full array-copy pre-barrier
 extern void mmtk_array_copy_pre(MMTk_Mutator mutator, void* src, void* dst, size_t count);
 
@@ -167,6 +170,7 @@ typedef struct {
     int (*referent_offset) ();
     int (*discovered_offset) ();
     char* (*dump_object_string) (void* object);
+    char* (*describe_object_role) (void* object);
     void (*scan_roots_in_all_mutator_threads)(SlotsClosure closure);
     void (*scan_roots_in_mutator_thread)(SlotsClosure closure, void* tls);
     void (*scan_code_cache_roots) (SlotsClosure closure);

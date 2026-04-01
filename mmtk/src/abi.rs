@@ -350,7 +350,7 @@ impl fmt::Debug for OopDesc {
             ((*UPCALLS).dump_object_string)(mem::transmute::<&OopDesc, ObjectReference>(self))
         };
         let c_str: &CStr = unsafe { CStr::from_ptr(c_string) };
-        let s: &str = c_str.to_str().unwrap();
+        let s = c_str.to_string_lossy();
         write!(f, "{}", s)
     }
 }

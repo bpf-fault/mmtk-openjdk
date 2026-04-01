@@ -101,6 +101,7 @@ pub struct OpenJDK_Upcalls {
     pub referent_offset: extern "C" fn() -> i32,
     pub discovered_offset: extern "C" fn() -> i32,
     pub dump_object_string: extern "C" fn(object: ObjectReference) -> *const c_char,
+    pub describe_object_role: extern "C" fn(object: ObjectReference) -> *const c_char,
     pub scan_roots_in_all_mutator_threads: extern "C" fn(closure: SlotsClosure),
     pub scan_roots_in_mutator_thread: extern "C" fn(closure: SlotsClosure, tls: VMMutatorThread),
     pub scan_code_cache_roots: extern "C" fn(closure: SlotsClosure),

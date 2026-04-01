@@ -5,19 +5,20 @@ use crate::BUILDER;
 use crate::UPCALLS;
 use libc::c_char;
 use mmtk::memory_manager;
-use mmtk::plan::BarrierSelector;
+use mmtk::plan::{BarrierSelector, Compressor};
 use mmtk::scheduler::GCWorker;
 use mmtk::util::alloc::AllocatorSelector;
 use mmtk::util::api_util::NullableObjectReference;
 use mmtk::util::opaque_pointer::*;
 use mmtk::util::{Address, ObjectReference};
+use mmtk::vm::{slot::Slot, Scanning};
 use mmtk::AllocationSemantics;
 use mmtk::Mutator;
 use mmtk::MutatorContext;
 use once_cell::sync;
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 macro_rules! with_singleton {
     (|$x: ident| $($expr:tt)*) => {
@@ -434,6 +435,269 @@ pub extern "C" fn executable() -> bool {
 #[no_mangle]
 pub extern "C" fn mmtk_load_reference(mutator: *mut libc::c_void, o: ObjectReference) {
     with_mutator!(|mutator| mutator.barrier().load_weak_reference(o))
+}
+
+fn trace_stale_uffd_write<const COMPRESSED: bool>(
+    src: ObjectReference,
+    slot: Address,
+    target: NullableObjectReference,
+) {
+    static TRACE_BUDGET: AtomicI32 = AtomicI32::new(-1);
+
+    let Some(target) = Option::<ObjectReference>::from(target) else {
+        return;
+    };
+    let singleton = crate::singleton::<COMPRESSED>();
+    let Some(plan) = singleton
+        .get_plan()
+        .downcast_ref::<Compressor<OpenJDK<COMPRESSED>>>()
+    else {
+        return;
+    };
+    if !plan.is_uffd_compaction_active() {
+        return;
+    }
+    if !plan
+        .compressor_space
+        .debug_is_stale_compaction_source_ref(target)
+    {
+        return;
+    }
+    let budget = TRACE_BUDGET.load(Ordering::Relaxed);
+    if budget < 0 {
+        let configured_budget = std::env::var("MMTK_TRACE_UFFD_STALE_WRITES_BUDGET")
+            .ok()
+            .and_then(|value| value.parse::<i32>().ok())
+            .unwrap_or(64);
+        let _ = TRACE_BUDGET.compare_exchange(
+            budget,
+            configured_budget,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+    }
+
+    let slot = OpenJDKSlot::<COMPRESSED>::from(slot);
+    let old_value = slot.load();
+    let slot_desc = <OpenJDK<COMPRESSED> as mmtk::vm::VMBinding>::VMScanning::describe_slot(
+        src, slot,
+    )
+    .unwrap_or_else(|| format!("slot_addr=0x{:x}", slot.addr.as_usize()));
+    let src_state = plan.compressor_space.debug_describe_compaction_object(src);
+    let target_state = plan.compressor_space.debug_describe_compaction_object(target);
+    let old_state = old_value.map(|value| plan.compressor_space.debug_describe_compaction_object(value));
+    let src_dbg = format!("{:?}", crate::abi::Oop::from(src));
+    let target_dbg = format!("{:?}", crate::abi::Oop::from(target));
+    let old_dbg = old_value.map(|value| format!("{:?}", crate::abi::Oop::from(value)));
+    let describe_role = |obj: ObjectReference| unsafe {
+        let ptr = ((*UPCALLS).describe_object_role)(obj);
+        if ptr.is_null() {
+            None
+        } else {
+            Some(CStr::from_ptr(ptr).to_string_lossy().into_owned())
+        }
+    };
+    let src_vm_role = describe_role(src);
+    let target_vm_role = describe_role(target);
+    let old_vm_role = old_value.and_then(describe_role);
+
+    let trace_src = std::env::var("MMTK_TRACE_UFFD_WRITE_SRC_DBG_SUBSTR").ok();
+    let trace_src_role = std::env::var("MMTK_TRACE_UFFD_WRITE_SRC_ROLE_SUBSTR").ok();
+    let trace_new = std::env::var("MMTK_TRACE_UFFD_WRITE_NEW_DBG_SUBSTR").ok();
+    let trace_new_role = std::env::var("MMTK_TRACE_UFFD_WRITE_NEW_ROLE_SUBSTR").ok();
+    let trace_old_role = std::env::var("MMTK_TRACE_UFFD_WRITE_OLD_ROLE_SUBSTR").ok();
+    let trace_slot = std::env::var("MMTK_TRACE_UFFD_WRITE_SLOT_SUBSTR").ok();
+    let trace_require_all = std::env::var("MMTK_TRACE_UFFD_WRITE_REQUIRE_ALL")
+        .ok()
+        .is_some_and(|value| value != "0");
+    let trace_src_matches = trace_src
+        .as_ref()
+        .is_none_or(|needle| src_dbg.contains(needle));
+    let trace_src_role_matches = trace_src_role.as_ref().is_none_or(|needle| {
+        src_vm_role
+            .as_ref()
+            .is_some_and(|role| role.contains(needle))
+    });
+    let trace_new_matches = trace_new
+        .as_ref()
+        .is_none_or(|needle| target_dbg.contains(needle));
+    let trace_new_role_matches = trace_new_role.as_ref().is_none_or(|needle| {
+        target_vm_role
+            .as_ref()
+            .is_some_and(|role| role.contains(needle))
+    });
+    let trace_old_role_matches = trace_old_role.as_ref().is_none_or(|needle| {
+        old_vm_role
+            .as_ref()
+            .is_some_and(|role| role.contains(needle))
+    });
+    let trace_slot_matches = trace_slot
+        .as_ref()
+        .is_none_or(|needle| slot_desc.contains(needle));
+    let any_trace_filter_set = trace_src.is_some()
+        || trace_src_role.is_some()
+        || trace_new.is_some()
+        || trace_new_role.is_some()
+        || trace_old_role.is_some()
+        || trace_slot.is_some();
+    let should_trace = if trace_require_all {
+        any_trace_filter_set
+            && trace_src_matches
+            && trace_src_role_matches
+            && trace_new_matches
+            && trace_new_role_matches
+            && trace_old_role_matches
+            && trace_slot_matches
+    } else if any_trace_filter_set {
+        trace_src
+            .as_ref()
+            .is_some_and(|needle| src_dbg.contains(needle))
+            || trace_src_role.as_ref().is_some_and(|needle| {
+                src_vm_role
+                    .as_ref()
+                    .is_some_and(|role| role.contains(needle))
+            })
+            || trace_new
+                .as_ref()
+                .is_some_and(|needle| target_dbg.contains(needle))
+            || trace_new_role.as_ref().is_some_and(|needle| {
+                target_vm_role
+                    .as_ref()
+                    .is_some_and(|role| role.contains(needle))
+            })
+            || trace_old_role.as_ref().is_some_and(|needle| {
+                old_vm_role
+                    .as_ref()
+                    .is_some_and(|role| role.contains(needle))
+            })
+            || trace_slot
+                .as_ref()
+                .is_some_and(|needle| slot_desc.contains(needle))
+    } else {
+        true
+    };
+    if should_trace {
+        if TRACE_BUDGET.fetch_sub(1, Ordering::Relaxed) <= 0 {
+            return;
+        }
+        log::info!(
+            "Potential stale UFFD heap write: src={} src_kind={:?} src_dbg={} src_vm_role={:?} src_state=[{}] slot={} old={:?} old_dbg={:?} old_vm_role={:?} old_state={:?} new={} new_dbg={} new_vm_role={:?} new_state=[{}]",
+            src,
+            crate::abi::Oop::from(src).klass::<COMPRESSED>().kind,
+            src_dbg,
+            src_vm_role,
+            src_state,
+            slot_desc,
+            old_value,
+            old_dbg,
+            old_vm_role,
+            old_state,
+            target,
+            target_dbg,
+            target_vm_role,
+            target_state,
+        );
+    }
+
+    let abort_src = std::env::var("MMTK_ABORT_ON_UFFD_WRITE_SRC_DBG_SUBSTR").ok();
+    let abort_src_role = std::env::var("MMTK_ABORT_ON_UFFD_WRITE_SRC_ROLE_SUBSTR").ok();
+    let abort_new = std::env::var("MMTK_ABORT_ON_UFFD_WRITE_NEW_DBG_SUBSTR").ok();
+    let abort_new_role = std::env::var("MMTK_ABORT_ON_UFFD_WRITE_NEW_ROLE_SUBSTR").ok();
+    let abort_old_role = std::env::var("MMTK_ABORT_ON_UFFD_WRITE_OLD_ROLE_SUBSTR").ok();
+    let abort_slot = std::env::var("MMTK_ABORT_ON_UFFD_WRITE_SLOT_SUBSTR").ok();
+    let require_all = std::env::var("MMTK_ABORT_ON_UFFD_WRITE_REQUIRE_ALL")
+        .ok()
+        .is_some_and(|value| value != "0");
+    let src_matches = abort_src
+        .as_ref()
+        .is_none_or(|needle| src_dbg.contains(needle));
+    let src_role_matches = abort_src_role.as_ref().is_none_or(|needle| {
+        src_vm_role
+            .as_ref()
+            .is_some_and(|role| role.contains(needle))
+    });
+    let new_matches = abort_new
+        .as_ref()
+        .is_none_or(|needle| target_dbg.contains(needle));
+    let new_role_matches = abort_new_role.as_ref().is_none_or(|needle| {
+        target_vm_role
+            .as_ref()
+            .is_some_and(|role| role.contains(needle))
+    });
+    let old_role_matches = abort_old_role.as_ref().is_none_or(|needle| {
+        old_vm_role
+            .as_ref()
+            .is_some_and(|role| role.contains(needle))
+    });
+    let slot_matches = abort_slot
+        .as_ref()
+        .is_none_or(|needle| slot_desc.contains(needle));
+    let any_filter_set = abort_src.is_some()
+        || abort_src_role.is_some()
+        || abort_new.is_some()
+        || abort_new_role.is_some()
+        || abort_old_role.is_some()
+        || abort_slot.is_some();
+    let should_abort = if require_all {
+        any_filter_set
+            && src_matches
+            && src_role_matches
+            && new_matches
+            && new_role_matches
+            && old_role_matches
+            && slot_matches
+    } else {
+        abort_src
+            .as_ref()
+            .is_some_and(|needle| src_dbg.contains(needle))
+            || abort_src_role.as_ref().is_some_and(|needle| {
+                src_vm_role
+                    .as_ref()
+                    .is_some_and(|role| role.contains(needle))
+            })
+            || abort_new
+                .as_ref()
+                .is_some_and(|needle| target_dbg.contains(needle))
+            || abort_new_role.as_ref().is_some_and(|needle| {
+                target_vm_role
+                    .as_ref()
+                    .is_some_and(|role| role.contains(needle))
+            })
+            || abort_old_role.as_ref().is_some_and(|needle| {
+                old_vm_role
+                    .as_ref()
+                    .is_some_and(|role| role.contains(needle))
+            })
+            || abort_slot
+                .as_ref()
+                .is_some_and(|needle| slot_desc.contains(needle))
+    };
+    if should_abort {
+        log::error!(
+            "Aborting on matched UFFD write trace: require_all={} src_dbg={:?} src_role={:?} new_dbg={:?} new_role={:?} old_role={:?} slot={:?}",
+            require_all,
+            abort_src,
+            abort_src_role,
+            abort_new,
+            abort_new_role,
+            abort_old_role,
+            abort_slot,
+        );
+        std::process::abort();
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn mmtk_debug_trace_uffd_write(
+    src: ObjectReference,
+    slot: Address,
+    target: NullableObjectReference,
+) {
+    if crate::use_compressed_oops() {
+        trace_stale_uffd_write::<true>(src, slot, target)
+    } else {
+        trace_stale_uffd_write::<false>(src, slot, target)
+    }
 }
 
 /// Full pre barrier

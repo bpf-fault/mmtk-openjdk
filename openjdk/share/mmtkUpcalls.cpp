@@ -34,6 +34,8 @@
 #include "mmtkUpcalls.hpp"
 #include "mmtkVMCompanionThread.hpp"
 #include "oops/access.hpp"
+#include "oops/instanceKlass.hpp"
+#include "oops/objArrayOop.inline.hpp"
 #include "runtime/interfaceSupport.inline.hpp"
 #include "runtime/atomic.hpp"
 #include "runtime/mutexLocker.hpp"
@@ -274,6 +276,39 @@ static char* dump_object_string(void* object) {
   return o->print_value_string();
 }
 
+static char* describe_object_role(void* object) {
+  oop target = (oop)object;
+  if (target == nullptr) {
+    return nullptr;
+  }
+
+  ClassLoaderDataGraphKlassIteratorAtomic iter;
+  while (Klass* k = iter.next_klass()) {
+    if (!k->is_instance_klass()) {
+      continue;
+    }
+    InstanceKlass* ik = InstanceKlass::cast(k);
+    objArrayOop refs = ik->constants()->resolved_references_or_null();
+    if (refs == nullptr) {
+      continue;
+    }
+    ResourceMark rm;
+    char buf[512];
+    if (refs == target) {
+      jio_snprintf(buf, sizeof(buf), "resolved_references(holder=%s)", ik->name()->as_C_string());
+      return os::strdup(buf);
+    }
+    for (int i = 0; i < refs->length(); i++) {
+      if (refs->obj_at(i) == target) {
+        jio_snprintf(buf, sizeof(buf), "resolved_references_elem(holder=%s,index=%d)", ik->name()->as_C_string(), i);
+        return os::strdup(buf);
+      }
+    }
+  }
+
+  return nullptr;
+}
+
 static void mmtk_schedule_finalizer() {
   MMTkHeap::heap()->schedule_finalizer();
 }
@@ -378,6 +413,7 @@ OpenJDK_Upcalls mmtk_upcalls = {
   referent_offset,
   discovered_offset,
   dump_object_string,
+  describe_object_role,
   mmtk_scan_roots_in_all_mutator_threads,
   mmtk_scan_roots_in_mutator_thread,
   mmtk_scan_code_cache_roots,
