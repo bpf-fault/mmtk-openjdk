@@ -56,6 +56,10 @@ pub extern "C" fn get_mmtk_version() -> *const c_char {
 
 #[no_mangle]
 pub extern "C" fn mmtk_active_barrier() -> *const c_char {
+    // VM page-protection dirty tracking replaces the compiled barrier.
+    if mmtk::util::dirty_track::is_dirty_tracking_active() {
+        return NO_BARRIER.as_ptr();
+    }
     with_singleton!(|singleton| {
         match singleton.get_plan().constraints().barrier {
             BarrierSelector::NoBarrier => NO_BARRIER.as_ptr(),
