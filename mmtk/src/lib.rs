@@ -172,6 +172,13 @@ lazy_static! {
         let ret = mmtk::memory_manager::mmtk_init(&builder);
         MMTK_INITIALIZED.store(true, std::sync::atomic::Ordering::SeqCst);
         slots::initialize_compressed_oops_base_and_shift();
+        // Class B v2 (bpf in-kernel fixup): hand the compressed-oops base/shift
+        // to the fault-compaction layer so the kernel handler can decode/encode
+        // narrow references when forwarding.
+        mmtk::util::compact_faults::set_compressed_oops(
+            slots::BASE.load(Ordering::Relaxed).as_usize(),
+            slots::SHIFT.load(Ordering::Relaxed) as u32,
+        );
         *ret
     };
     pub static ref SINGLETON_UNCOMPRESSED: MMTK<OpenJDK<false>> = {
