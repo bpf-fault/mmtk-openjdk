@@ -60,6 +60,11 @@ pub extern "C" fn mmtk_active_barrier() -> *const c_char {
     if mmtk::util::dirty_track::is_dirty_tracking_active() {
         return NO_BARRIER.as_ptr();
     }
+    // Page-COW SATB replaces the compiled SATB barrier for concurrent
+    // marking: snapshots are taken in-kernel at WP-fault time.
+    if mmtk::util::satb_pages::satb_pages_active() {
+        return NO_BARRIER.as_ptr();
+    }
     with_singleton!(|singleton| {
         match singleton.get_plan().constraints().barrier {
             BarrierSelector::NoBarrier => NO_BARRIER.as_ptr(),
