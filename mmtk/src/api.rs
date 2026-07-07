@@ -61,8 +61,11 @@ pub extern "C" fn mmtk_active_barrier() -> *const c_char {
         return NO_BARRIER.as_ptr();
     }
     // Page-COW SATB replaces the compiled SATB barrier for concurrent
-    // marking: snapshots are taken in-kernel at WP-fault time.
-    if mmtk::util::satb_pages::satb_pages_active() {
+    // marking: snapshots are taken in-kernel at WP-fault time.  In
+    // VERIFY mode the compiled barrier stays on (differential oracle).
+    if mmtk::util::satb_pages::satb_pages_active()
+        && !mmtk::util::satb_pages::satb_verify()
+    {
         return NO_BARRIER.as_ptr();
     }
     with_singleton!(|singleton| {
