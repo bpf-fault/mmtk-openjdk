@@ -398,11 +398,32 @@ pub extern "C" fn executable() -> bool {
 #[no_mangle]
 pub extern "C" fn mmtk_klass_kind_valid(k: usize) -> i32 {
     // Caller guarantees `k` is readable (mapped-segment window check).
+    // Cross-check TWO independent fields for consistency: kind must be a
+    // known variant AND layout_helper's sign must agree with it (HotSpot
+    // encodes arrays with lh < 0, instances with lh > 0 or the small
+    // slow-path values).  Aliased garbage inside committed class-space
+    // segments passes a single-field tag ~1/8 of the time; requiring
+    // agreement squares the filter.
+    use crate::abi::KlassKind;
     let klass = unsafe { &*(k as *const crate::abi::Klass) };
     let kind = klass.kind as i32;
-    (kind >= 0
-        && kind < (crate::abi::KlassKind::Unknown as i32)
-        && kind != (crate::abi::KlassKind::InstanceStackChunk as i32)) as i32
+    if kind < 0
+        || kind >= (KlassKind::Unknown as i32)
+        || kind == (KlassKind::InstanceStackChunk as i32)
+    {
+        return 0;
+    }
+    let lh = klass.layout_helper;
+    let is_array =
+        kind == (KlassKind::TypeArray as i32) || kind == (KlassKind::ObjArray as i32);
+    let consistent = if is_array {
+        lh < 0
+    } else {
+        // instance kinds: positive size-in-bytes (word-aligned, sane
+        // bound) or the neutral/slow-path encodings (0, small values)
+        lh >= 0 && lh < (1 << 24) && (lh & 7) == 0 || (0..=8).contains(&lh)
+    };
+    consistent as i32
 }
 
 #[no_mangle]
