@@ -314,6 +314,13 @@ static COMPRESSED_KLASS_SHIFT: AtomicUsize = AtomicUsize::new(0);
 
 /// When enabling compressed pointers, the class pointers are also compressed.
 /// The c++ part of the binding should pass the compressed klass base and shift to rust binding, as object scanning will need it.
+pub fn compressed_klass_base_and_shift() -> (Address, usize) {
+    (
+        COMPRESSED_KLASS_BASE.load(Ordering::Relaxed),
+        COMPRESSED_KLASS_SHIFT.load(Ordering::Relaxed),
+    )
+}
+
 pub fn set_compressed_klass_base_and_shift(base: Address, shift: usize) {
     COMPRESSED_KLASS_BASE.store(base, Ordering::Relaxed);
     COMPRESSED_KLASS_SHIFT.store(shift, Ordering::Relaxed);

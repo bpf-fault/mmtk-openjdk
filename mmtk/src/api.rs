@@ -396,6 +396,25 @@ pub extern "C" fn executable() -> bool {
 }
 
 #[no_mangle]
+pub extern "C" fn mmtk_klass_kind_valid(k: usize) -> i32 {
+    // Caller guarantees `k` is readable (mapped-segment window check).
+    let klass = unsafe { &*(k as *const crate::abi::Klass) };
+    let kind = klass.kind as i32;
+    (kind >= 0
+        && kind < (crate::abi::KlassKind::Unknown as i32)
+        && kind != (crate::abi::KlassKind::InstanceStackChunk as i32)) as i32
+}
+
+#[no_mangle]
+pub extern "C" fn mmtk_klass_decode_window(base_out: *mut usize, shift_out: *mut usize) {
+    let (base, shift) = crate::abi::compressed_klass_base_and_shift();
+    unsafe {
+        *base_out = base.as_usize();
+        *shift_out = shift;
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn mmtk_load_reference(mutator: *mut libc::c_void, o: ObjectReference) {
     with_mutator!(|mutator| mutator.barrier().load_weak_reference(o))
 }
