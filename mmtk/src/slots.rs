@@ -205,6 +205,22 @@ impl<const COMPRESSED: bool> Slot for OpenJDKSlot<COMPRESSED> {
             unsafe { self.addr.store(object) }
         }
     }
+
+    fn slot_address(&self) -> Option<Address> {
+        // The field's in-memory address (tag stripped). Valid for both
+        // compressed (4-byte) and uncompressed (8-byte) slots; the Class B v2
+        // reference bitmap records it so the in-kernel fixup handler knows
+        // which words/dwords hold references to forward.
+        Some(self.untagged_address())
+    }
+
+    fn from_address(addr: Address) -> Option<Self> {
+        // Rebuild a slot at `addr`. With compressed oops on, an untagged
+        // address denotes a narrow (4-byte) slot, which is what the Class B v2
+        // bitmap records; the deferred-forward path uses load()/store() to
+        // decompress/recompress.
+        Some(OpenJDKSlot::from(addr))
+    }
 }
 
 /// A range of OpenJDKSlot, usually used for arrays.
